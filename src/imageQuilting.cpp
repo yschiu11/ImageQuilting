@@ -360,6 +360,12 @@ Image<Float3> ImageQuilting::generate(
     return dst.subtex(0, generatedHeight, 0, generatedWidth);
 }
 
+struct CandidateBlock
+{
+    float      mse;
+    int        x, y;
+};
+
 ImageView<Float3> ImageQuilting::pickSourceBlock(
     const Image<Float3>         &src,
     const Image<Float3>         &dst,
@@ -367,43 +373,38 @@ ImageView<Float3> ImageQuilting::pickSourceBlock(
     int                          y,
     std::default_random_engine  &rng) const
 {
-    if(!useMSEBlockSelection_)
+    int yLen = src.height() - blockH_;
+    int xLen = src.width()  - blockW_;
+    std::vector<CandidateBlock> candidates;
+    candidates.reserve(xLen * yLen);
+
+    float minMSE = std::numeric_limits<float>::max();
+
+    for(int srcY = 0; srcY < yLen; ++srcY)
     {
-        std::uniform_int_distribution disX(
-            0, static_cast<int>(src.width() - blockW_ - 1));
-        std::uniform_int_distribution disY(
-            0, static_cast<int>(src.height() - blockH_ - 1));
-
-        const int srcX = disX(rng);
-        const int srcY = disY(rng);
-
-        return src.subview(srcY, srcY + blockH_, srcX, srcX + blockW_);
-    }
-
-    std::multimap<float, agz::math::vec2i> mseToXY;
-
-    for(int srcY = 0; srcY < src.height() - blockH_; ++srcY)
-    {
-        for(int srcX = 0; srcX < src.width() - blockW_; ++srcX)
+        for(int srcX = 0; srcX < xLen; ++srcX)
         {
             const float mse = computeMSE(
                 src, dst, srcX, srcY, x, y,
                 blockW_, blockH_, overlapW_, overlapH_);
 
-            if((x == 0 && y == 0) || mse > 0.001f)
-                mseToXY.insert({ mse, agz::math::vec2i{ srcX, srcY } });
+            if ((x == 0 && y == 0) || mse > 0.001f)
+            {
+                candidates.push_back({ mse, srcX, srcY });
+                if (mse < minMSE)
+                    minMSE = mse;
+            }
         }
     }
 
-    const float maxAllowedMSE = mseToXY.begin()->first * (1 + blockTolerance_);
+    const float maxAllowedMSE = minMSE * (1 + blockTolerance_);
     std::vector<agz::math::vec2i> allowedXYs;
+    allowedXYs.reserve(candidates.size());
 
-    for(auto &p : mseToXY)
+    for(auto &c : candidates)
     {
-        if(p.first <= maxAllowedMSE)
-            allowedXYs.push_back(p.second);
-        else
-            break;
+        if (c.mse <= maxAllowedMSE)
+            allowedXYs.push_back({c.x, c.y});
     }
 
     std::uniform_int_distribution dis(
@@ -419,18 +420,6 @@ void ImageQuilting::putBlockAt(
     int                      x,
     int                      y) const
 {
-    if(!useMinEdgeCut_)
-    {
-        for(int yi = 0; yi < block.height(); ++yi)
-        {
-            for(int xi = 0; xi < block.width(); ++xi)
-            {
-                dst(y + yi, x + xi) = block(yi, xi);
-            }
-        }
-        return;
-    }
-
     if(x > 0 && y == 0)
     {
         const auto verticalCut = computeVerticalMinCostCut(
