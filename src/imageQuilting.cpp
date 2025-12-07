@@ -10,13 +10,16 @@ namespace
     float computeErrorSum_Lum(
         const Image<float> &A, int xA, int yA,
         const Image<float> &B, int xB, int yB,
-        int width, int height
+        int width, int height, float maxSqrErr
     ) {
         float sqrErrSum = 0;
         for (int ix=0, ixA = xA, ixB = xB; ix < width; ++ix, ++ixA, ++ixB) {
             for (int iy=0, iyA = yA, iyB = yB; iy < height; ++iy, ++iyA, ++iyB) {
                 sqrErrSum += agz::math::sqr(
                     (A(iyA, ixA) - B(iyB, ixB)));
+
+                if (sqrErrSum > maxSqrErr)
+                    return sqrErrSum;
             }
         }
         return sqrErrSum;
@@ -30,41 +33,47 @@ namespace
         int blockW,
         int blockH,
         int overlapW,
-        int overlapH
+        int overlapH,
+        float minMSE,
+        float tolerance
     ) {
-        if (dstX <= 0  && dstY <= 0)
-            return 0;
+        int pixelCnt = 0;
+
+        if(dstX <= 0 && dstY <= 0) return 0;
+        else if(dstX > 0 && dstY <= 0) pixelCnt = overlapW * blockH;
+        else if(dstX <= 0 && dstY > 0) pixelCnt = overlapH * blockW;
+        else pixelCnt = overlapW * overlapH + overlapW * (blockH - overlapH) + overlapH * (blockW - overlapW);
+
+        float sseLimit = (minMSE >= std::numeric_limits<float>::max())
+                         ? std::numeric_limits<float>::max()
+                         : minMSE * (1.0f + tolerance) * pixelCnt;
 
         if (dstX > 0 && dstY <= 0) {
             const float sqrErrSum = computeErrorSum_Lum(
-                src, srcX, srcY, dst, 0, 0, overlapW, blockH); // dst offset 設為 0,0
+                src, srcX, srcY, dst, 0, 0, overlapW, blockH, sseLimit);
 
-            const int pixelCnt = overlapW * blockH;
             return sqrErrSum / pixelCnt;
         }
 
         if (dstX <= 0 && dstY > 0) {
             const float sqrErrSum = computeErrorSum_Lum(
-                src, srcX, srcY, dst, 0, 0, blockW, overlapH); // dst offset 設為 0,0
+                src, srcX, srcY, dst, 0, 0, blockW, overlapH, sseLimit);
 
-            const int pixelCnt = overlapH * blockW;
             return sqrErrSum / pixelCnt;
         }
 
         const float A = computeErrorSum_Lum(
-            src, srcX, srcY, dst, 0, 0, overlapW, overlapH);
+            src, srcX, srcY, dst, 0, 0, overlapW, overlapH, sseLimit);
+        if(A > sseLimit) return A / pixelCnt;
 
         const float B = computeErrorSum_Lum(
-            src, srcX, srcY + overlapH, dst, 0, overlapH, 
-            overlapW, blockH - overlapH);
+            src, srcX, srcY + overlapH, dst, 0, overlapH,
+            overlapW, blockH - overlapH, sseLimit);
+        if((A + B) > sseLimit) return (A + B) / pixelCnt;
 
         const float C = computeErrorSum_Lum(
             src, srcX + overlapW, srcY, dst, overlapW, 0,
-            blockW - overlapW, overlapH);
-
-        const int pixelCnt = overlapW * overlapH
-                           + overlapW * (blockH - overlapH)
-                           + overlapH * (blockW - overlapW);
+            blockW - overlapW, overlapH, sseLimit);
 
         return (A + B + C) / pixelCnt;
     }
@@ -255,7 +264,7 @@ ImageQuilting::ImageQuilting()
       useMSEBlockSelection_(true),
       useMinEdgeCut_(true)
 {
-    
+
 }
 
 void ImageQuilting::setParams(int blockWidth, int blockHeight) noexcept
@@ -384,16 +393,40 @@ ImageView<Float3> ImageQuilting::pickSourceBlock(
 
     float minMSE = std::numeric_limits<float>::max();
 
+    if (x > 0 || y > 0) {
+        std::uniform_int_distribution disX(0, static_cast<int>(src.width() - blockW_ - 1));
+        std::uniform_int_distribution disY(0, static_cast<int>(src.height() - blockH_ - 1));
+
+        for(int i = 0; i < 20; ++i) {
+            int sx = disX(rng);
+            int sy = disY(rng);
+            float mse = computeMSE_Lum(srcLum, dstLum, sx, sy, x, y,
+                                       blockW_, blockH_, overlapW_, overlapH_,
+                                       minMSE, blockTolerance_);
+
+            if (mse > 0.001f) {
+                candidates.push_back({ mse, sx, sy });
+                if(mse < minMSE) minMSE = mse;
+            }
+        }
+    }
+
     for(int srcY = 0; srcY < yLen; ++srcY) {
         for(int srcX = 0; srcX < xLen; ++srcX) {
             const float mse = computeMSE_Lum(
                 srcLum, dstLum, srcX, srcY, x, y,
-                blockW_, blockH_, overlapW_, overlapH_);
+                blockW_, blockH_, overlapW_, overlapH_, minMSE, blockTolerance_);
 
-            if ((x == 0 && y == 0) || mse > 0.001f) {
-                candidates.push_back({ mse, srcX, srcY });
-                if (mse < minMSE)
-                    minMSE = mse;
+            if (mse > 0.001f || (x == 0 && y == 0)) {
+                float currentLimit = (minMSE >= std::numeric_limits<float>::max())
+                                     ? std::numeric_limits<float>::max()
+                                     : minMSE * (1.0f + blockTolerance_);
+
+                if (mse <= currentLimit) {
+                    candidates.push_back({ mse, srcX, srcY });
+                    if (mse < minMSE)
+                        minMSE = mse;
+                }
             }
         }
     }
