@@ -7,68 +7,59 @@
 
 namespace
 {
-
-    float computeErrorSum(
-        const Image<Float3> &A, int xA, int yA,
-        const Image<Float3> &B, int xB, int yB,
-        int width, int height)
-    {
+    float computeErrorSum_Lum(
+        const Image<float> &A, int xA, int yA,
+        const Image<float> &B, int xB, int yB,
+        int width, int height
+    ) {
         float sqrErrSum = 0;
-        for(int ix = 0, ixA = xA, ixB = xB; ix < width;
-            ++ix, ++ixA, ++ixB)
-        {
-            for(int iy = 0, iyA = yA, iyB = yB; iy < height;
-                ++iy, ++iyA, ++iyB)
-            {
+        for (int ix=0, ixA = xA, ixB = xB; ix < width; ++ix, ++ixA, ++ixB) {
+            for (int iy=0, iyA = yA, iyB = yB; iy < height; ++iy, ++iyA, ++iyB) {
                 sqrErrSum += agz::math::sqr(
-                    (A(iyA, ixA) - B(iyB, ixB)).lum());
+                    (A(iyA, ixA) - B(iyB, ixB)));
             }
         }
         return sqrErrSum;
     }
 
-    float computeMSE(
-        const Image<Float3> &src,
-        const Image<Float3> &dst,
+    float computeMSE_Lum(
+        const Image<float> &src,
+        const Image<float> &dst,
         int srcX, int srcY,
         int dstX, int dstY,
         int blockW,
         int blockH,
         int overlapW,
-        int overlapH)
-    {
-        if(dstX <= 0  && dstY <= 0)
+        int overlapH
+    ) {
+        if (dstX <= 0  && dstY <= 0)
             return 0;
 
-        if(dstX > 0 && dstY <= 0)
-        {
-            const float sqrErrSum = computeErrorSum(
-                src, srcX, srcY, dst, dstX, dstY, overlapW, blockH);
+        if (dstX > 0 && dstY <= 0) {
+            const float sqrErrSum = computeErrorSum_Lum(
+                src, srcX, srcY, dst, 0, 0, overlapW, blockH); // dst offset 設為 0,0
 
             const int pixelCnt = overlapW * blockH;
-
             return sqrErrSum / pixelCnt;
         }
 
-        if(dstX <= 0 && dstY > 0)
-        {
-            const float sqrErrSum = computeErrorSum(
-                src, srcX, srcY, dst, dstX, dstY, blockW, overlapH);
+        if (dstX <= 0 && dstY > 0) {
+            const float sqrErrSum = computeErrorSum_Lum(
+                src, srcX, srcY, dst, 0, 0, blockW, overlapH); // dst offset 設為 0,0
 
             const int pixelCnt = overlapH * blockW;
-
             return sqrErrSum / pixelCnt;
         }
 
-        const float A = computeErrorSum(
-            src, srcX, srcY, dst, dstX, dstY, overlapW, overlapH);
+        const float A = computeErrorSum_Lum(
+            src, srcX, srcY, dst, 0, 0, overlapW, overlapH);
 
-        const float B = computeErrorSum(
-            src, srcX, srcY + overlapH, dst, dstX, dstY + overlapH,
-
+        const float B = computeErrorSum_Lum(
+            src, srcX, srcY + overlapH, dst, 0, overlapH, 
             overlapW, blockH - overlapH);
-        const float C = computeErrorSum(
-            src, srcX + overlapW, srcY, dst, dstX + overlapW, dstY,
+
+        const float C = computeErrorSum_Lum(
+            src, srcX + overlapW, srcY, dst, overlapW, 0,
             blockW - overlapW, overlapH);
 
         const int pixelCnt = overlapW * overlapH
@@ -373,6 +364,19 @@ ImageView<Float3> ImageQuilting::pickSourceBlock(
     int                          y,
     std::default_random_engine  &rng) const
 {
+    Image<float> srcLum = src.map([](const Float3 &c) { return c.lum(); });
+    Image<float> dstLum(blockH_, blockW_);
+    if (y > 0) {
+        for(int iy = 0; iy < overlapH_; ++iy)
+            for(int ix = 0; ix < blockW_; ++ix)
+                dstLum(iy, ix) = dst(y + iy, x + ix).lum();
+    }
+    if (x > 0) {
+        for(int iy = 0; iy < blockH_; ++iy)
+            for(int ix = 0; ix < overlapW_; ++ix)
+                dstLum(iy, ix) = dst(y + iy, x + ix).lum();
+    }
+
     int yLen = src.height() - blockH_;
     int xLen = src.width()  - blockW_;
     std::vector<CandidateBlock> candidates;
@@ -380,16 +384,13 @@ ImageView<Float3> ImageQuilting::pickSourceBlock(
 
     float minMSE = std::numeric_limits<float>::max();
 
-    for(int srcY = 0; srcY < yLen; ++srcY)
-    {
-        for(int srcX = 0; srcX < xLen; ++srcX)
-        {
-            const float mse = computeMSE(
-                src, dst, srcX, srcY, x, y,
+    for(int srcY = 0; srcY < yLen; ++srcY) {
+        for(int srcX = 0; srcX < xLen; ++srcX) {
+            const float mse = computeMSE_Lum(
+                srcLum, dstLum, srcX, srcY, x, y,
                 blockW_, blockH_, overlapW_, overlapH_);
 
-            if ((x == 0 && y == 0) || mse > 0.001f)
-            {
+            if ((x == 0 && y == 0) || mse > 0.001f) {
                 candidates.push_back({ mse, srcX, srcY });
                 if (mse < minMSE)
                     minMSE = mse;
@@ -401,8 +402,7 @@ ImageView<Float3> ImageQuilting::pickSourceBlock(
     std::vector<agz::math::vec2i> allowedXYs;
     allowedXYs.reserve(candidates.size());
 
-    for(auto &c : candidates)
-    {
+    for(auto &c : candidates) {
         if (c.mse <= maxAllowedMSE)
             allowedXYs.push_back({c.x, c.y});
     }
