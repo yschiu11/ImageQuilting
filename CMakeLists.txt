@@ -10,6 +10,8 @@ FILE(GLOB_RECURSE SRC
 		"${PROJECT_SOURCE_DIR}/src/*.h")
 
 ADD_EXECUTABLE(ImageQuilting ${SRC})
+find_package(OpenMP REQUIRED)
+target_link_libraries(ImageQuilting PUBLIC OpenMP::OpenMP_CXX)
 
 FOREACH(_SRC IN ITEMS ${SRC})
     GET_FILENAME_COMPONENT(SRC "${_SRC}" PATH)
