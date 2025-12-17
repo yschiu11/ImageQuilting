@@ -1,4 +1,8 @@
 #include <map>
+#include <chrono>
+#include <iostream>
+#include "gpu_pick.h"
+#include <vector>
 
 #include <agz-utils/console.h>
 #include <agz-utils/misc.h>
@@ -274,6 +278,16 @@ Image<Float3> ImageQuilting::generate(const Image<Float3> &src,
   // create dst image
 
   Image<Float3> dst(imageH, imageW);
+  using clock_t = std::chrono::steady_clock;
+  auto t_all0 = clock_t::now();
+
+  double t_srcLum_ms = 0.0;
+  double t_pick_ms   = 0.0;
+  double t_put_ms    = 0.0;
+
+  auto to_ms = [](auto dt) {
+      return std::chrono::duration<double, std::milli>(dt).count();
+  };
 
   // fill blocks of dst image with simple raster scan order
 
@@ -288,8 +302,17 @@ Image<Float3> ImageQuilting::generate(const Image<Float3> &src,
     for (int blockX = 0; blockX < blockCountX; ++blockX) {
       const int x = blockX * (blockW_ - overlapW_);
 
-      const auto block = pickSourceBlock(src, dst, x, y, rng);
-      putBlockAt(block, dst, x, y);
+      ImageView<Float3> block;
+      {
+    	  auto t0 = clock_t::now();
+    	  block = pickSourceBlock(src, dst, x, y, rng);
+    	  t_pick_ms += to_ms(clock_t::now() - t0);
+      }
+      {
+   	  auto t0 = clock_t::now();
+    	  putBlockAt(block, dst, x, y);
+    	  t_put_ms += to_ms(clock_t::now() - t0);
+      }
 
       ++pbar;
     }
@@ -298,6 +321,15 @@ Image<Float3> ImageQuilting::generate(const Image<Float3> &src,
   }
 
   pbar.done();
+  auto t_all1 = clock_t::now();
+  double t_all_ms = to_ms(t_all1 - t_all0);
+
+  std::cerr << "\n[PROFILE] total(ms)=" << t_all_ms
+          << " srcLum(ms)=" << t_srcLum_ms
+          << " pick(ms)=" << t_pick_ms
+          << " put(ms)="  << t_put_ms
+          << " other(ms)=" << (t_all_ms - t_srcLum_ms - t_pick_ms - t_put_ms)
+          << "\n";
 
   return dst.subtex(0, generatedHeight, 0, generatedWidth);
 }
@@ -306,129 +338,67 @@ struct CandidateBlock {
   float mse;
   int x, y;
 };
-ImageView<Float3>
-ImageQuilting::pickSourceBlock(const Image<Float3> &src,
-                               const Image<Float3> &dst, int x, int y,
-                               std::default_random_engine &rng) const {
-  Image<float> srcLum = src.map([](const Float3 &c) { return c.lum(); });
+ImageView<Float3> ImageQuilting::pickSourceBlock(
+    const Image<Float3>         &src,
+    const Image<Float3>         &dst,
+    int                          x,
+    int                          y,
+    std::default_random_engine  &rng) const
+{
+    Image<float> srcLumTex = src.map([](const Float3 &c) { return c.lum(); });
 
-  Image<float> dstLum(blockH_, blockW_);
-  if (y > 0) {
-    for (int iy = 0; iy < overlapH_; ++iy)
-      for (int ix = 0; ix < blockW_; ++ix)
-        dstLum(iy, ix) = dst(y + iy, x + ix).lum();
-  }
-  if (x > 0) {
-    for (int iy = 0; iy < blockH_; ++iy)
-      for (int ix = 0; ix < overlapW_; ++ix)
-        dstLum(iy, ix) = dst(y + iy, x + ix).lum();
-  }
+    Image<float> dstLumTex(blockH_, blockW_);
+    for(int iy = 0; iy < blockH_; ++iy)
+        for(int ix = 0; ix < blockW_; ++ix)
+            dstLumTex(iy, ix) = 0.0f;
 
-  const int yLen = src.height() - blockH_;
-  const int xLen = src.width() - blockW_;
-
-  if (xLen <= 0 || yLen <= 0) {
-    return src.subview(0, blockH_, 0, blockW_);
-  }
-
-  float minMSE = std::numeric_limits<float>::max();
-  if (x > 0 || y > 0) {
-    std::uniform_int_distribution<int> disX(0, xLen - 1);
-    std::uniform_int_distribution<int> disY(0, yLen - 1);
-
-    for (int i = 0; i < 20; ++i) {
-      const int sx = disX(rng);
-      const int sy = disY(rng);
-
-      const float mse =
-          computeMSE_Lum(srcLum, dstLum, sx, sy, x, y, blockW_, blockH_,
-                         overlapW_, overlapH_, minMSE, blockTolerance_);
-
-      if (mse > 0.001f && mse < minMSE)
-        minMSE = mse;
+    if (y > 0) {
+        for(int iy = 0; iy < overlapH_; ++iy)
+            for(int ix = 0; ix < blockW_; ++ix)
+                dstLumTex(iy, ix) = dst(y + iy, x + ix).lum();
     }
-  }
-
-  std::vector<float> mses((size_t)xLen * (size_t)yLen,
-                          std::numeric_limits<float>::infinity());
-
-#ifdef _OPENMP
-#pragma omp parallel for collapse(2) schedule(static)
-#endif
-  for (int srcY = 0; srcY < yLen; ++srcY) {
-    for (int srcX = 0; srcX < xLen; ++srcX) {
-      const float mse =
-          computeMSE_Lum(srcLum, dstLum, srcX, srcY, x, y, blockW_, blockH_,
-                         overlapW_, overlapH_, minMSE, blockTolerance_);
-
-      mses[(size_t)srcY * (size_t)xLen + (size_t)srcX] = mse;
+    if (x > 0) {
+        for(int iy = 0; iy < blockH_; ++iy)
+            for(int ix = 0; ix < overlapW_; ++ix)
+                dstLumTex(iy, ix) = dst(y + iy, x + ix).lum();
     }
-  }
 
-  if (x == 0 && y == 0) {
-    for (int srcY = 0; srcY < yLen; ++srcY) {
-      for (int srcX = 0; srcX < xLen; ++srcX) {
-        const float mse = mses[(size_t)srcY * (size_t)xLen + (size_t)srcX];
-        if (mse < minMSE)
-          minMSE = mse;
-      }
-    }
-  } else {
-    for (int srcY = 0; srcY < yLen; ++srcY) {
-      for (int srcX = 0; srcX < xLen; ++srcX) {
-        const float mse = mses[(size_t)srcY * (size_t)xLen + (size_t)srcX];
-        if (mse > 0.001f && mse < minMSE)
-          minMSE = mse;
-      }
-    }
-  }
+    const int srcW = src.width();
+    const int srcH = src.height();
+    std::vector<float> h_srcLum((size_t)srcW * (size_t)srcH);
+    for(int iy = 0; iy < srcH; ++iy)
+        for(int ix = 0; ix < srcW; ++ix)
+            h_srcLum[(size_t)iy * (size_t)srcW + (size_t)ix] = srcLumTex(iy, ix);
 
-  if (!(minMSE < std::numeric_limits<float>::max())) {
-    std::uniform_int_distribution<int> disX(0, xLen - 1);
-    std::uniform_int_distribution<int> disY(0, yLen - 1);
-    const int sx = disX(rng);
-    const int sy = disY(rng);
-    return src.subview(sy, sy + blockH_, sx, sx + blockW_);
-  }
+    std::vector<float> h_dstLum((size_t)blockW_ * (size_t)blockH_);
+    for(int iy = 0; iy < blockH_; ++iy)
+        for(int ix = 0; ix < blockW_; ++ix)
+            h_dstLum[(size_t)iy * (size_t)blockW_ + (size_t)ix] = dstLumTex(iy, ix);
 
-  const float thr = minMSE * (1.0f + blockTolerance_);
-
-  std::vector<agz::math::vec2i> allowedXYs;
-  allowedXYs.reserve((size_t)xLen * (size_t)yLen / 8);
-
-  for (int srcY = 0; srcY < yLen; ++srcY) {
-    for (int srcX = 0; srcX < xLen; ++srcX) {
-      const float mse = mses[(size_t)srcY * (size_t)xLen + (size_t)srcX];
-
-      if (x == 0 && y == 0) {
-        if (mse <= thr)
-          allowedXYs.push_back({srcX, srcY});
-      } else {
-        if (mse > 0.001f && mse <= thr)
-          allowedXYs.push_back({srcX, srcY});
-      }
-    }
-  }
-
-  if (allowedXYs.empty()) {
+    unsigned int seed = (unsigned int)rng(); //  rng
     int bestX = 0, bestY = 0;
-    float best = std::numeric_limits<float>::infinity();
-    for (int srcY = 0; srcY < yLen; ++srcY)
-      for (int srcX = 0; srcX < xLen; ++srcX) {
-        const float mse = mses[(size_t)srcY * (size_t)xLen + (size_t)srcX];
-        if (mse < best) {
-          best = mse;
-          bestX = srcX;
-          bestY = srcY;
-        }
-      }
+    float minMSE = 0.0f;
+
+    bool ok = gpu_pick_block_mse(
+        h_srcLum.data(), srcW, srcH,
+        h_dstLum.data(), blockW_, blockH_,
+        overlapW_, overlapH_,
+        x, y,
+        blockTolerance_,
+        seed,
+        bestX, bestY,
+        minMSE
+    );
+
+    if(!ok)
+    {
+        std::uniform_int_distribution disX(0, static_cast<int>(src.width() - blockW_ - 1));
+        std::uniform_int_distribution disY(0, static_cast<int>(src.height() - blockH_ - 1));
+        bestX = disX(rng);
+        bestY = disY(rng);
+"${PROJECT_SOURCE_DIR}/src/*.h"    }
+
     return src.subview(bestY, bestY + blockH_, bestX, bestX + blockW_);
-  }
-
-  std::uniform_int_distribution<int> dis(0, (int)allowedXYs.size() - 1);
-  const auto xy = allowedXYs[dis(rng)];
-
-  return src.subview(xy.y, xy.y + blockH_, xy.x, xy.x + blockW_);
 }
 
 void ImageQuilting::putBlockAt(const ImageView<Float3> &block,

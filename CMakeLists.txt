@@ -1,27 +1,55 @@
-﻿CMAKE_MINIMUM_REQUIRED(VERSION 3.10)
+cmake_minimum_required(VERSION 3.18)
 
-PROJECT(IMAGE-QUILTING)
+project(IMAGE_QUILTING LANGUAGES CXX CUDA)
 
-ADD_SUBDIRECTORY(lib/agz-utils)
-TARGET_COMPILE_DEFINITIONS(AGZUtils PUBLIC AGZ_UTILS_SSE)
+add_subdirectory(lib/agz-utils)
+target_compile_definitions(AGZUtils PUBLIC AGZ_UTILS_SSE)
 
-FILE(GLOB_RECURSE SRC
-		"${PROJECT_SOURCE_DIR}/src/*.cpp"
-		"${PROJECT_SOURCE_DIR}/src/*.h")
 
-ADD_EXECUTABLE(ImageQuilting ${SRC})
-find_package(OpenMP REQUIRED)
-target_link_libraries(ImageQuilting PUBLIC OpenMP::OpenMP_CXX)
+file(GLOB_RECURSE SRC
+    "${PROJECT_SOURCE_DIR}/src/*.cpp"
+    "${PROJECT_SOURCE_DIR}/src/*.h"
+    "${PROJECT_SOURCE_DIR}/src/*.cu"
+)
 
-FOREACH(_SRC IN ITEMS ${SRC})
-    GET_FILENAME_COMPONENT(SRC "${_SRC}" PATH)
-    STRING(REPLACE "${PROJECT_SOURCE_DIR}/src" "src" _GRP_PATH "${SRC}")
-    STRING(REPLACE "/" "\\" _GRP_PATH "${_GRP_PATH}")
-    SOURCE_GROUP("${_GRP_PATH}" FILES "${_SRC}")
-ENDFOREACH()
+add_executable(ImageQuilting ${SRC})
 
-SET_PROPERTY(TARGET ImageQuilting PROPERTY CXX_STANDARD 17)
-SET_PROPERTY(TARGET ImageQuilting PROPERTY CXX_STANDARD_REQUIRED ON)
+set_property(TARGET ImageQuilting PROPERTY CXX_STANDARD 17)
+set_property(TARGET ImageQuilting PROPERTY CXX_STANDARD_REQUIRED ON)
 
-TARGET_INCLUDE_DIRECTORIES(ImageQuilting PUBLIC "${PROJECT_SOURCE_DIR}/lib/cxxopts")
-TARGET_LINK_LIBRARIES(ImageQuilting PUBLIC AGZUtils)
+target_include_directories(ImageQuilting PUBLIC "${PROJECT_SOURCE_DIR}/lib/cxxopts")
+target_link_libraries(ImageQuilting PUBLIC AGZUtils)
+
+find_package(OpenMP)
+if(OpenMP_CXX_FOUND)
+    target_link_libraries(ImageQuilting PUBLIC OpenMP::OpenMP_CXX)
+    target_compile_definitions(ImageQuilting PUBLIC IQ_USE_OPENMP=1)
+endif()
+
+include(CheckCXXSourceCompiles)
+set(CMAKE_REQUIRED_LIBRARIES "")
+check_cxx_source_compiles("
+  #include <filesystem>
+  int main() { std::filesystem::path p{\".\"}; return 0; }
+" HAS_STD_FILESYSTEM)
+if(NOT HAS_STD_FILESYSTEM)
+    target_link_libraries(ImageQuilting PUBLIC stdc++fs)
+endif()
+
+include(CheckLanguage)
+check_language(CUDA)
+if(CMAKE_CUDA_COMPILER)
+    enable_language(CUDA)
+    set_target_properties(ImageQuilting PROPERTIES
+        CUDA_STANDARD 17
+        CUDA_STANDARD_REQUIRED ON
+        CUDA_SEPARABLE_COMPILATION ON
+    )
+    target_compile_definitions(ImageQuilting PUBLIC IQ_USE_CUDA=1)
+    if(NOT DEFINED CMAKE_CUDA_ARCHITECTURES)
+        set(CMAKE_CUDA_ARCHITECTURES 75)
+    endif()
+else()
+    target_compile_definitions(ImageQuilting PUBLIC IQ_USE_CUDA=0)
+endif()
+
