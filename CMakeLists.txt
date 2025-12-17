@@ -1,4 +1,4 @@
-﻿CMAKE_MINIMUM_REQUIRED(VERSION 3.10)
+CMAKE_MINIMUM_REQUIRED(VERSION 3.10)
 
 PROJECT(IMAGE-QUILTING)
 
@@ -10,6 +10,8 @@ FILE(GLOB_RECURSE SRC
 		"${PROJECT_SOURCE_DIR}/src/*.h")
 
 ADD_EXECUTABLE(ImageQuilting ${SRC})
+find_package(OpenMP REQUIRED)
+target_link_libraries(ImageQuilting PUBLIC OpenMP::OpenMP_CXX)
 
 FOREACH(_SRC IN ITEMS ${SRC})
     GET_FILENAME_COMPONENT(SRC "${_SRC}" PATH)
@@ -21,5 +23,12 @@ ENDFOREACH()
 SET_PROPERTY(TARGET ImageQuilting PROPERTY CXX_STANDARD 17)
 SET_PROPERTY(TARGET ImageQuilting PROPERTY CXX_STANDARD_REQUIRED ON)
 
+# Enable AVX2 SIMD instructions
+if(MSVC)
+    target_compile_options(ImageQuilting PRIVATE /arch:AVX2)
+else()
+    target_compile_options(ImageQuilting PRIVATE -mavx2 -mfma)
+endif()
+
 TARGET_INCLUDE_DIRECTORIES(ImageQuilting PUBLIC "${PROJECT_SOURCE_DIR}/lib/cxxopts")
-TARGET_LINK_LIBRARIES(ImageQuilting PUBLIC AGZUtils stdc++fs)
+TARGET_LINK_LIBRARIES(ImageQuilting PUBLIC AGZUtils)
