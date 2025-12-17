@@ -1,7 +1,7 @@
-#include <map>
+#include "gpu_pick.h"
 #include <chrono>
 #include <iostream>
-#include "gpu_pick.h"
+#include <map>
 #include <vector>
 
 #include <agz-utils/console.h>
@@ -282,11 +282,11 @@ Image<Float3> ImageQuilting::generate(const Image<Float3> &src,
   auto t_all0 = clock_t::now();
 
   double t_srcLum_ms = 0.0;
-  double t_pick_ms   = 0.0;
-  double t_put_ms    = 0.0;
+  double t_pick_ms = 0.0;
+  double t_put_ms = 0.0;
 
   auto to_ms = [](auto dt) {
-      return std::chrono::duration<double, std::milli>(dt).count();
+    return std::chrono::duration<double, std::milli>(dt).count();
   };
 
   // fill blocks of dst image with simple raster scan order
@@ -304,14 +304,14 @@ Image<Float3> ImageQuilting::generate(const Image<Float3> &src,
 
       ImageView<Float3> block;
       {
-    	  auto t0 = clock_t::now();
-    	  block = pickSourceBlock(src, dst, x, y, rng);
-    	  t_pick_ms += to_ms(clock_t::now() - t0);
+        auto t0 = clock_t::now();
+        block = pickSourceBlock(src, dst, x, y, rng);
+        t_pick_ms += to_ms(clock_t::now() - t0);
       }
       {
-   	  auto t0 = clock_t::now();
-    	  putBlockAt(block, dst, x, y);
-    	  t_put_ms += to_ms(clock_t::now() - t0);
+        auto t0 = clock_t::now();
+        putBlockAt(block, dst, x, y);
+        t_put_ms += to_ms(clock_t::now() - t0);
       }
 
       ++pbar;
@@ -325,11 +325,10 @@ Image<Float3> ImageQuilting::generate(const Image<Float3> &src,
   double t_all_ms = to_ms(t_all1 - t_all0);
 
   std::cerr << "\n[PROFILE] total(ms)=" << t_all_ms
-          << " srcLum(ms)=" << t_srcLum_ms
-          << " pick(ms)=" << t_pick_ms
-          << " put(ms)="  << t_put_ms
-          << " other(ms)=" << (t_all_ms - t_srcLum_ms - t_pick_ms - t_put_ms)
-          << "\n";
+            << " srcLum(ms)=" << t_srcLum_ms << " pick(ms)=" << t_pick_ms
+            << " put(ms)=" << t_put_ms
+            << " other(ms)=" << (t_all_ms - t_srcLum_ms - t_pick_ms - t_put_ms)
+            << "\n";
 
   return dst.subtex(0, generatedHeight, 0, generatedWidth);
 }
@@ -338,67 +337,57 @@ struct CandidateBlock {
   float mse;
   int x, y;
 };
-ImageView<Float3> ImageQuilting::pickSourceBlock(
-    const Image<Float3>         &src,
-    const Image<Float3>         &dst,
-    int                          x,
-    int                          y,
-    std::default_random_engine  &rng) const
-{
-    Image<float> srcLumTex = src.map([](const Float3 &c) { return c.lum(); });
+ImageView<Float3>
+ImageQuilting::pickSourceBlock(const Image<Float3> &src,
+                               const Image<Float3> &dst, int x, int y,
+                               std::default_random_engine &rng) const {
+  Image<float> srcLumTex = src.map([](const Float3 &c) { return c.lum(); });
 
-    Image<float> dstLumTex(blockH_, blockW_);
-    for(int iy = 0; iy < blockH_; ++iy)
-        for(int ix = 0; ix < blockW_; ++ix)
-            dstLumTex(iy, ix) = 0.0f;
+  Image<float> dstLumTex(blockH_, blockW_);
+  for (int iy = 0; iy < blockH_; ++iy)
+    for (int ix = 0; ix < blockW_; ++ix)
+      dstLumTex(iy, ix) = 0.0f;
 
-    if (y > 0) {
-        for(int iy = 0; iy < overlapH_; ++iy)
-            for(int ix = 0; ix < blockW_; ++ix)
-                dstLumTex(iy, ix) = dst(y + iy, x + ix).lum();
-    }
-    if (x > 0) {
-        for(int iy = 0; iy < blockH_; ++iy)
-            for(int ix = 0; ix < overlapW_; ++ix)
-                dstLumTex(iy, ix) = dst(y + iy, x + ix).lum();
-    }
+  if (y > 0) {
+    for (int iy = 0; iy < overlapH_; ++iy)
+      for (int ix = 0; ix < blockW_; ++ix)
+        dstLumTex(iy, ix) = dst(y + iy, x + ix).lum();
+  }
+  if (x > 0) {
+    for (int iy = 0; iy < blockH_; ++iy)
+      for (int ix = 0; ix < overlapW_; ++ix)
+        dstLumTex(iy, ix) = dst(y + iy, x + ix).lum();
+  }
 
-    const int srcW = src.width();
-    const int srcH = src.height();
-    std::vector<float> h_srcLum((size_t)srcW * (size_t)srcH);
-    for(int iy = 0; iy < srcH; ++iy)
-        for(int ix = 0; ix < srcW; ++ix)
-            h_srcLum[(size_t)iy * (size_t)srcW + (size_t)ix] = srcLumTex(iy, ix);
+  const int srcW = src.width();
+  const int srcH = src.height();
+  std::vector<float> h_srcLum((size_t)srcW * (size_t)srcH);
+  for (int iy = 0; iy < srcH; ++iy)
+    for (int ix = 0; ix < srcW; ++ix)
+      h_srcLum[(size_t)iy * (size_t)srcW + (size_t)ix] = srcLumTex(iy, ix);
 
-    std::vector<float> h_dstLum((size_t)blockW_ * (size_t)blockH_);
-    for(int iy = 0; iy < blockH_; ++iy)
-        for(int ix = 0; ix < blockW_; ++ix)
-            h_dstLum[(size_t)iy * (size_t)blockW_ + (size_t)ix] = dstLumTex(iy, ix);
+  std::vector<float> h_dstLum((size_t)blockW_ * (size_t)blockH_);
+  for (int iy = 0; iy < blockH_; ++iy)
+    for (int ix = 0; ix < blockW_; ++ix)
+      h_dstLum[(size_t)iy * (size_t)blockW_ + (size_t)ix] = dstLumTex(iy, ix);
 
-    unsigned int seed = (unsigned int)rng(); //  rng
-    int bestX = 0, bestY = 0;
-    float minMSE = 0.0f;
+  unsigned int seed = (unsigned int)rng(); //  rng
+  int bestX = 0, bestY = 0;
+  float minMSE = 0.0f;
 
-    bool ok = gpu_pick_block_mse(
-        h_srcLum.data(), srcW, srcH,
-        h_dstLum.data(), blockW_, blockH_,
-        overlapW_, overlapH_,
-        x, y,
-        blockTolerance_,
-        seed,
-        bestX, bestY,
-        minMSE
-    );
+  bool ok = gpu_pick_block_mse(h_srcLum.data(), srcW, srcH, h_dstLum.data(),
+                               blockW_, blockH_, overlapW_, overlapH_, x, y,
+                               blockTolerance_, seed, bestX, bestY, minMSE);
 
-    if(!ok)
-    {
-        std::uniform_int_distribution disX(0, static_cast<int>(src.width() - blockW_ - 1));
-        std::uniform_int_distribution disY(0, static_cast<int>(src.height() - blockH_ - 1));
-        bestX = disX(rng);
-        bestY = disY(rng);
-"${PROJECT_SOURCE_DIR}/src/*.h"    }
-
-    return src.subview(bestY, bestY + blockH_, bestX, bestX + blockW_);
+  if (!ok) {
+    std::uniform_int_distribution disX(
+        0, static_cast<int>(src.width() - blockW_ - 1));
+    std::uniform_int_distribution disY(
+        0, static_cast<int>(src.height() - blockH_ - 1));
+    bestX = disX(rng);
+    bestY = disY(rng);
+  }
+  return src.subview(bestY, bestY + blockH_, bestX, bestX + blockW_);
 }
 
 void ImageQuilting::putBlockAt(const ImageView<Float3> &block,
